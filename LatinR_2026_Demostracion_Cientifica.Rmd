@@ -1,0 +1,266 @@
+---
+title: "LatinR 2026: integración reproducible de datos satelitales y paneles espaciales en R"
+subtitle: "Una aplicación de PM₂.₅ para Colombia, 2012–2022"
+author: "Edwin Fernando Muñoz Chipatecua — Universidad Externado de Colombia"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,
+                      fig.width=9, fig.height=4.5)
+options(scipen=999)
+```
+
+# Presentación
+
+Este documento reúne los principales resultados del trabajo *Integración reproducible de datos satelitales y paneles espaciales en R: una aplicación de PM₂.₅ para Colombia*, desarrollado para el periodo 2012–2022.
+
+Se presentan los procedimientos utilizados para integrar la información, verificar la consistencia de los datos y analizar la distribución temporal y espacial de las concentraciones de PM₂.₅ en Colombia. También se incluye una exploración de su relación estadística con la mortalidad respiratoria.
+
+Las tablas y figuras permiten examinar los resultados con mayor detalle. El código en R puede consultarse directamente en cada sección.
+
+# 1. Integración y auditoría del panel
+
+```{r carga}
+ruta <- file.path("datos","14_panel_departamental_integrado_2012_2022.csv")
+if (!file.exists(ruta)) stop("Extraiga el ZIP completo. Falta: ",ruta)
+panel <- read.csv(ruta, check.names=FALSE, fileEncoding="UTF-8",
+                  stringsAsFactors=FALSE, na.strings=c("","NA"))
+cat("Filas:",nrow(panel)," | Columnas:",ncol(panel),"\n")
+print(names(panel))
+```
+
+```{r validacion}
+necesarias <- c("dep_key","anio","Departamento","PM25_area_valida",
+ "viento_media_ms","Poblacion","Defunciones_IRA_candidata",
+ "Tasa_IRA_100mil_candidata","Codigo_causa_DANE",
+ "comparable_IRA_109_108_verificada")
+faltantes <- setdiff(necesarias,names(panel))
+if(length(faltantes)) stop("Faltan columnas: ",paste(faltantes,collapse=", "))
+auditoria <- data.frame(
+ Control=c("Observaciones","Departamentos","Años","Duplicados departamento-año",
+           "PM2.5 faltante","Viento faltante"),
+ Resultado=c(nrow(panel),length(unique(panel$dep_key)),
+ length(unique(panel$anio)),sum(duplicated(panel[c("dep_key","anio")])),
+ sum(is.na(panel$PM25_area_valida)),sum(is.na(panel$viento_media_ms))))
+knitr::kable(auditoria,caption="Controles recalculados del CSV")
+stopifnot(nrow(panel)==363, length(unique(panel$dep_key))==33,
+          identical(sort(unique(panel$anio)),2012:2022),
+          !anyDuplicated(panel[c("dep_key","anio")]))
+```
+
+El panel departamental tiene **363 registros** (33 departamentos × 11 años). El panel municipal de PM₂.₅, construido previamente, tiene **12.309 registros** (1.119 municipios × 11 años). No son el mismo producto.
+
+# 2. Procedimiento espacial documentado
+
+**Decisión de procesamiento que conviene poder auditar.** Los datos ACAG están organizados en celdas; GADM delimita polígonos administrativos. La concentración territorial se calculó usando la superficie válida que cada celda comparte con el municipio. Así, una celda que apenas intersecta un municipio no recibe el mismo peso que otra que lo cubre extensamente.
+
+La siguiente expresión documenta la regla implementada en los scripts originales (no se recalcula en este documento):
+
+$$
+\widehat{PM}_{it} =
+\frac{\sum_{c\in \mathcal{C}_i} PM_{ct}\,a_c f_{ic} I_{ct}}
+{\sum_{c\in \mathcal{C}_i} a_c f_{ic} I_{ct}}.
+$$
+
+Los siguientes gráficos permiten inspeccionar la evidencia de validación y la resolución espacial municipal. Son **salidas del procesamiento original**, no una extracción satelital ejecutada por este documento. La media por área representa concentración territorial, no exposición personal ni media ponderada por población.
+
+### Verificación de los valores calculados
+
+```{r figura-validacion, echo=FALSE, out.width='85%', fig.align='center', fig.cap='Verificación muestral de la consistencia de los valores calculados de PM₂.₅.'}
+if (file.exists("figuras/06_validacion_muestral.png")) {
+  knitr::include_graphics("figuras/06_validacion_muestral.png")
+} else {
+  cat("Figura no disponible: revise la ruta figuras/06_validacion_muestral.png")
+}
+```
+
+### Resolución espacial municipal
+
+```{r figura-resolucion, echo=FALSE, out.width='85%', fig.align='center', fig.cap='Distribución de la resolución espacial de los municipios en la agregación de PM₂.₅.'}
+if (file.exists("figuras/06_resolucion_municipal.png")) {
+  knitr::include_graphics("figuras/06_resolucion_municipal.png")
+} else {
+  cat("Figura no disponible: revise la ruta figuras/06_resolucion_municipal.png")
+}
+```
+
+# 3. Evolución temporal y diferencias departamentales
+
+```{r serie}
+serie <- aggregate(PM25_area_valida~anio,panel,mean)
+names(serie)[2] <- "media_pm25"
+knitr::kable(serie,digits=3,
+             caption="Promedio simple de los 33 promedios departamentales")
+cat("Año máximo:",serie$anio[which.max(serie$media_pm25)],"\n")
+cat("Año mínimo:",serie$anio[which.min(serie$media_pm25)],"\n")
+```
+
+```{r grafica}
+plot(serie$anio,serie$media_pm25,type="b",pch=19,lwd=2,
+     col="#005028",xlab="Año",ylab="PM2.5 (µg/m³)",
+     main="PM2.5 en Colombia, 2012–2022",xaxt="n")
+axis(1,at=serie$anio)
+grid()
+```
+
+```{r ranking}
+ranking <- aggregate(PM25_area_valida~Departamento,panel,mean)
+ranking <- ranking[order(-ranking$PM25_area_valida),]
+knitr::kable(head(ranking,5),digits=2,
+             caption="Mayores promedios departamentales, 2012–2022")
+```
+
+**Cómo leer estos resultados.** La serie resume promedios simples entre departamentos; por tanto, cada departamento aporta el mismo peso al promedio anual, independientemente de su población. El máximo se registra en 2020 (17,97 µg/m³) y el mínimo en 2013 (14,54 µg/m³). El ranking permite explorar diferencias territoriales, pero no debe interpretarse como clasificación de exposición individual.
+
+# 4. Resultados espaciales auditados
+
+## Cartografía comparativa
+
+```{r mapas, echo=FALSE, out.width="90%"}
+knitr::include_graphics("figuras/04_mapas_pm25_2012_vs_2022.png")
+```
+
+## Moran global
+
+La validación original (informe 16B) utiliza vecindad Queen, 32 departamentos conectados y 9.999 permutaciones por año. San Andrés y Providencia no tiene vecinos por contigüidad. Los once años presentan autocorrelación global positiva significativa después de corrección por comparaciones múltiples.
+
+```{r moran}
+moran <- data.frame(
+ anio=2012:2022,
+ I=c(.3527717,.3860155,.2436526,.2458476,.3220304,.3430774,
+     .3127660,.3276760,.4041887,.5864220,.3738347),
+ p=c(.0005,.0009,.0127,.0083,.0016,.0009,.0030,.0015,.0001,.0001,.0007))
+moran$p_BH_aprox <- p.adjust(moran$p,method="BH")
+knitr::kable(moran,digits=5,
+ caption="I y p del informe 16B; BH aproximado recalculado sobre p publicados")
+```
+
+**Importante:** los valores I y p se transcriben del informe de validación original, no se reestiman desde el CSV. El ajuste BH mostrado se calcula sobre valores p publicados y redondeados.
+
+## LISA
+
+El informe 17 documenta **dos observaciones significativas entre 352 contrastes**, con corrección Benjamini–Hochberg dentro de cada año: **Vaupés, alto–alto, 2020 y 2021**. Los resultados locales no deben confundirse con la significación global.
+
+# 5. Integración del viento ERA5
+
+```{r viento}
+sin_viento <- panel[is.na(panel$viento_media_ms),
+                   c("anio","Departamento","estado_viento")]
+cat("Observaciones sin viento:",nrow(sin_viento),"\n")
+knitr::kable(sin_viento,caption="Ausencias meteorológicas documentadas")
+```
+
+La integración meteorológica no constituye, por sí sola, evidencia de validez de una variable instrumental.
+
+# 6. Mortalidad respiratoria y análisis exploratorio
+
+La variable `Tasa_IRA_100mil_candidata` requiere cautela: las agrupaciones DANE 109 (2012–2015 y 2017), 108 (2018–2022) y la fuente especial de 2016 **no están homologadas documentalmente**.
+
+```{r auditoria-ira}
+causas <- unique(panel[c("anio","Codigo_causa_DANE",
+                          "estado_dato_IRA",
+                          "comparable_IRA_109_108_verificada")])
+knitr::kable(causas[order(causas$anio),],
+             caption="Auditoría de la comparabilidad sanitaria")
+```
+
+```{r comprobacion-tasa}
+tasa_recalculada <- with(panel,Defunciones_IRA_candidata/Poblacion*100000)
+dif <- max(abs(tasa_recalculada-panel$Tasa_IRA_100mil_candidata),
+           na.rm=TRUE)
+cat("Diferencia máxima de tasa:",format(dif,scientific=TRUE),"\n")
+```
+
+```{r correlacion}
+muestra <- panel[complete.cases(panel[c("PM25_area_valida",
+                                     "Tasa_IRA_100mil_candidata")]),]
+r <- cor(muestra$PM25_area_valida,muestra$Tasa_IRA_100mil_candidata)
+cat("Correlación agrupada de Pearson:",round(r,7),"\n")
+plot(muestra$PM25_area_valida,muestra$Tasa_IRA_100mil_candidata,
+     xlab="PM2.5 (µg/m³)",ylab="Tasa IRA candidata por 100.000",
+     main="Asociación descriptiva; no causal",pch=19,cex=.55,
+     col=adjustcolor("#005028",alpha.f=.4))
+grid()
+```
+
+## Efectos fijos descriptivos
+
+$$
+Tasa_{it}=\alpha_i+\lambda_t+\beta PM_{it}+\varepsilon_{it}.
+$$
+
+```{r efectos-fijos}
+modelo <- lm(Tasa_IRA_100mil_candidata~PM25_area_valida+
+               factor(dep_key)+factor(anio),data=muestra)
+cat("Coeficiente descriptivo:",
+    unname(coef(modelo)["PM25_area_valida"]),"\n")
+cat("Número de observaciones:",nobs(modelo),"\n")
+```
+
+El coeficiente no identifica un efecto causal. No se presenta estimación instrumental ni se afirma validez de sus supuestos. Los análisis originales documentan sensibilidad ante periodos y observaciones influyentes.
+
+# 7. De la asociación estadística a la identificación causal
+
+## Qué permiten concluir los análisis disponibles
+
+El diagrama de dispersión, la correlación agrupada y el modelo con efectos fijos describen **asociaciones entre unidades territoriales**. No responden por sí solos a la pregunta contrafactual: *¿cómo cambiaría la mortalidad respiratoria si una intervención redujera la concentración de PM₂.₅?*
+
+La distinción importa especialmente aquí: la tasa IRA es un indicador **candidato**, con clasificaciones de causas que todavía requieren homologación entre años. Una especificación estadística más sofisticada no resuelve automáticamente ese problema de medición.
+
+## Posibles vías de confusión
+
+| Factor o mecanismo | Por qué debe examinarse |
+|:--|:--|
+| Condiciones socioeconómicas y urbanización | Pueden relacionarse tanto con la contaminación como con el riesgo de mortalidad. |
+| Composición por edad y acceso a servicios de salud | Afectan las tasas observadas y pueden variar entre departamentos y años. |
+| Meteorología, estacionalidad y episodios de incendios | Pueden modificar la concentración y también afectar la salud por otras vías. |
+| Diferencias en registro y codificación de defunciones | Pueden producir cambios aparentes en el indicador sanitario. |
+
+Los efectos fijos departamentales y anuales controlan diferencias invariantes en el tiempo y choques comunes por año, respectivamente; **no eliminan automáticamente la confusión variable en el tiempo**.
+
+## Ruta de investigación causal: propuesta, no resultado
+
+1. **Definir el estimando:** precisar qué cambio en PM₂.₅, qué desenlace sanitario, qué población y qué horizonte temporal se quieren estudiar.
+2. **Homologar el desenlace:** revisar códigos y agrupaciones DANE, denominadores poblacionales y consistencia entre años.
+3. **Explicitar un modelo causal:** representar hipótesis y posibles factores de confusión mediante un DAG y decidir qué variables es apropiado ajustar.
+4. **Evaluar estrategias de identificación:** estudiar diseños con variables instrumentales, por ejemplo candidatos basados en viento, **solo después** de analizar relevancia, exclusión, independencia y mecanismos alternativos.
+5. **Considerar Double Machine Learning (DML):** como herramienta de estimación flexible **dentro de un diseño identificable**, no como sustituto de los supuestos causales.
+6. **Realizar análisis de robustez:** especificaciones, periodos, dependencia espacial, errores estándar y sensibilidad a factores no observados.
+
+> **Límite explícito:** este documento **no estima un efecto causal**, **no valida un instrumento meteorológico** y **no ejecuta DML**. Presenta la infraestructura de datos y la evidencia exploratoria que permitirían formular y evaluar una investigación causal posterior.
+
+# 8. Qué reproduce el documento y qué queda auditado
+
+| Componente | Estado |
+|:--|:--|
+| Estructura, duplicados y cobertura del panel | Recalculado |
+| Serie y ranking departamental de PM₂.₅ | Recalculado |
+| Ausencias de viento y auditoría DANE | Recalculado |
+| Correlación y coeficiente de efectos fijos | Recalculado |
+| Extracción NetCDF, intersecciones GADM y panel municipal | Documentados en scripts originales; no reejecutados |
+| Moran y LISA | Resultados de informes originales; no reestimados |
+| Estimación causal por variables instrumentales | No realizada |
+
+# 9. Resultados verificables y límites de uso
+
+| Evidencia disponible | Interpretación y límite |
+|:--|:--|
+| Panel departamental 2012–2022 | Base integrada y auditada; la estructura no garantiza ausencia de valores faltantes. |
+| Series y rankings de PM₂.₅ | Variación territorial y temporal; no equivalen a exposición individual. |
+| Moran y LISA documentados | Evidencia de dependencia espacial; no identifican mecanismos causales. |
+| Indicadores IRA y modelos descriptivos | Asociación exploratoria; comparabilidad sanitaria aún pendiente de homologación. |
+| Código y entorno de ejecución | Permiten examinar los cálculos ejecutados aquí y distinguirlos de los informes originales. |
+
+**Para reutilizar el trabajo:** verificar versiones de fuentes, criterios de agregación, definiciones sanitarias y supuestos antes de trasladar estos resultados a otras preguntas o periodos.
+
+# 10. Información de sesión
+
+```{r sesion}
+print(sessionInfo())
+```
